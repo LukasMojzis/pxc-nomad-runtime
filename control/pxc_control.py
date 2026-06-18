@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 import json
 import os
-import subprocess
 import sys
+import threading
+import time
 import urllib.request
+import base64
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -34,6 +36,13 @@ def consul(path):
     return get_json(f"{CONSUL}{path}")
 
 
+def consul_put_raw(path, value):
+    data = str(value).encode("utf-8")
+    request = urllib.request.Request(f"{CONSUL}{path}", data=data, method="PUT")
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return response.read().decode("utf-8")
+
+
 def allocations():
     return [
         alloc
@@ -47,22 +56,38 @@ def service(name, passing=False):
     return consul(f"/v1/health/service/{name}{suffix}")
 
 
-def alloc_exec(alloc_id, task, command, timeout=20):
-    cmd = [
-        "nomad",
-        "alloc",
-        "exec",
-        f"-address={NOMAD}",
-        f"-region={REGION}",
-        "-i=false",
-        "-t=false",
-        "-task",
-        task,
-        alloc_id,
-        *command,
-    ]
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
-    return {"returncode": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
+def publish_db_size_once():
+    records = consul("/v1/kv/pxc/node-classifier/?recurse")
+    candidates = []
+    for record in records or []:
+        try:
+            payload = json.loads(base64.b64decode(record["Value"]).decode("utf-8"))
+        except Exception:
+            continue
+        if payload.get("member_role") == "data":
+            candidates.append(payload)
+    if not candidates:
+        return {"ok": False, "reason": "no classifier data-member records found"}
+    size = max(int(item.get("db_bytes") or 0) for item in candidates)
+    consul_put_raw("/v1/kv/pxc/cluster/db_bytes", size)
+    return {
+        "ok": True,
+        "db_bytes": size,
+        "sources": [
+            {"node": item.get("node_name"), "db_bytes": int(item.get("db_bytes") or 0)}
+            for item in candidates
+        ],
+    }
+
+
+def db_size_publisher():
+    interval = int(os.environ.get("DB_SIZE_INTERVAL_SECONDS", "60"))
+    while True:
+        try:
+            publish_db_size_once()
+        except Exception as exc:
+            print(f"pxc-control: db size publish failed: {exc}", file=sys.stderr)
+        time.sleep(interval)
 
 
 def status():
@@ -85,7 +110,16 @@ def status():
             "pxc_primary_passing": len(service("pxc-primary", passing=True)),
             "pxc_ready_passing": len(service("pxc", passing=True)),
         },
+        "db_size": db_size_status(),
     }
+
+
+def db_size_status():
+    try:
+        value = urllib.request.urlopen(f"{CONSUL}/v1/kv/pxc/cluster/db_bytes?raw", timeout=5).read()
+        return {"published": True, "bytes": int(value.decode("utf-8").strip())}
+    except Exception:
+        return {"published": False, "bytes": 0}
 
 
 def recovery_candidates():
@@ -101,7 +135,11 @@ def recovery_candidates():
     for alloc in allocations():
         if alloc["TaskGroup"] != "cluster-member":
             continue
-        result = alloc_exec(alloc["ID"], "pxc", ["pxc-runtime", "recover-position"])
+        result = {
+            "returncode": 1,
+            "stdout": "",
+            "stderr": "recovery probes require an external Nomad CLI; disabled in the control image",
+        }
         seqno = -1
         uuid = "00000000-0000-0000-0000-000000000000"
         if result["returncode"] == 0 and ":" in result["stdout"]:
@@ -140,6 +178,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, status())
             elif self.path == "/recovery/candidates":
                 self._json(200, recovery_candidates())
+            elif self.path == "/db-size/publish":
+                self._json(200, publish_db_size_once())
             else:
                 self._json(404, {"error": "not found"})
         except Exception as exc:
@@ -152,6 +192,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     listen = os.environ.get("LISTEN", "0.0.0.0:8080")
     host, port = listen.rsplit(":", 1)
+    threading.Thread(target=db_size_publisher, daemon=True).start()
     ThreadingHTTPServer((host, int(port)), Handler).serve_forever()
 
 

@@ -12,3 +12,9 @@ Images:
 - `ghcr.io/lukasmojzis/pxc-nomad-pxc-runtime:8.4`
 - `ghcr.io/lukasmojzis/pxc-nomad-garbd-runtime:8.4`
 - `ghcr.io/lukasmojzis/pxc-nomad-control:latest`
+- `ghcr.io/lukasmojzis/pxc-nomad-node-classifier:latest`
+
+`pxc-nomad-node-classifier` measures local host facts and applies Nomad node
+metadata such as `pxc_member_role`, `pxc_admission`, and
+`pxc_storage_status`. Jobs should use that metadata for placement instead of
+hardcoding site or datacenter names.

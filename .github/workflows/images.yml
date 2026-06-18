@@ -27,6 +27,10 @@ jobs:
             context: control
             dockerfile: control/Dockerfile
             tag: ghcr.io/lukasmojzis/pxc-nomad-control:latest
+          - name: pxc-node-classifier
+            context: classifier
+            dockerfile: classifier/Dockerfile
+            tag: ghcr.io/lukasmojzis/pxc-nomad-node-classifier:latest
     steps:
       - uses: actions/checkout@v4
 
@@ -39,14 +43,19 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - uses: actions/setup-go@v5
-        if: matrix.context == 'runtime'
+        if: matrix.context == 'runtime' || matrix.context == 'classifier'
         with:
-          go-version-file: runtime/go.mod
+          go-version-file: ${{ matrix.context }}/go.mod
 
       - name: Test runtime helper
         if: matrix.context == 'runtime'
         run: go test -buildvcs=false ./...
         working-directory: runtime
+
+      - name: Test node classifier
+        if: matrix.context == 'classifier'
+        run: go test -buildvcs=false ./...
+        working-directory: classifier
 
       - name: Build runtime helper
         if: matrix.context == 'runtime'
