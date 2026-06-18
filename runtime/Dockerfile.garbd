@@ -1,0 +1,11 @@
+FROM percona/percona-xtradb-cluster:8.4
+
+USER 0
+RUN microdnf install -y percona-xtradb-cluster-garbd \
+  && microdnf clean all
+COPY pxc-runtime /usr/local/bin/pxc-runtime
+RUN chmod 0755 /usr/local/bin/pxc-runtime
+USER 1001
+
+ENTRYPOINT ["pxc-runtime"]
+CMD ["run-garbd"]
