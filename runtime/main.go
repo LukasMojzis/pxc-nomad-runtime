@@ -256,15 +256,26 @@ func candidateCount() int {
 }
 
 func recoverPositionValue() string {
-	cmd := exec.Command("mysqld", "--wsrep_recover", "--log-error-verbosity=3", "--log_error=/dev/stderr", "--wsrep-provider=/usr/lib64/galera4/libgalera_smm.so", "--pxc-encrypt-cluster-traffic=OFF")
+	logFile, err := os.CreateTemp(datadir(), "wsrep_recover.*.log")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "pxc-runtime: failed to create recovery log: %v\n", err)
+		return "00000000-0000-0000-0000-000000000000:-1"
+	}
+	logPath := logFile.Name()
+	logFile.Close()
+	defer os.Remove(logPath)
+
+	cmd := exec.Command("mysqld", "--wsrep_recover", "--log-error-verbosity=3", "--log_error="+logPath, "--wsrep-provider=/usr/lib64/galera4/libgalera_smm.so", "--pxc-encrypt-cluster-traffic=OFF")
 	output, _ := cmd.CombinedOutput()
-	lines := strings.Split(string(output), "\n")
+	logBody, _ := os.ReadFile(logPath)
+	lines := strings.Split(string(logBody), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		if idx := strings.Index(lines[i], "Recovered position:"); idx >= 0 {
 			return strings.TrimSpace(lines[i][idx+len("Recovered position:"):])
 		}
 	}
 	fmt.Fprint(os.Stderr, string(output))
+	fmt.Fprint(os.Stderr, string(logBody))
 	return "00000000-0000-0000-0000-000000000000:-1"
 }
 
@@ -390,10 +401,6 @@ func electWinner() (recoveryCandidate, error) {
 
 func runPXC() error {
 	if shouldBootstrap() {
-		return bootstrapStart()
-	}
-	if !healthyPrimaryExists() && safeToBootstrapIs1() {
-		fmt.Fprintln(os.Stderr, "pxc-runtime: safe_to_bootstrap=1 and no healthy primary exists; bootstrapping")
 		return bootstrapStart()
 	}
 	err := normalStart()
