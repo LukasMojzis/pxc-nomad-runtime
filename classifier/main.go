@@ -20,7 +20,8 @@ const (
 	defaultMinRAMMB       = 8192
 	defaultMinFreeBytes   = int64(20 * 1024 * 1024 * 1024)
 	defaultInterval       = 60 * time.Second
-	defaultHostPXCDataDir = "/host/root/docker/pxc/data"
+	defaultHostRoot       = "/host"
+	defaultHostPXCDataDir = "/root/docker/pxc/data"
 )
 
 type Node struct {
@@ -147,7 +148,7 @@ func memoryMB(node Node) int64 {
 			return value / 1024 / 1024
 		}
 	}
-	body, err := os.ReadFile(env("HOST_MEMINFO", "/host/proc/meminfo"))
+	body, err := os.ReadFile(hostPathToContainer(env("HOST_ROOT", defaultHostRoot), "/proc/meminfo"))
 	if err != nil {
 		return 0
 	}
@@ -205,8 +206,61 @@ func existingMember(path string) bool {
 	return false
 }
 
+func hostPathToContainer(root, hostPath string) string {
+	cleanRoot := filepath.Clean(root)
+	cleanHostPath := filepath.Clean(hostPath)
+	if cleanHostPath == "." || cleanHostPath == string(filepath.Separator) {
+		return cleanRoot
+	}
+	return filepath.Join(cleanRoot, strings.TrimPrefix(cleanHostPath, string(filepath.Separator)))
+}
+
+func resolveHostPath(root, hostPath string) string {
+	current := filepath.Clean(hostPath)
+	if !filepath.IsAbs(current) {
+		current = string(filepath.Separator) + current
+	}
+	for depth := 0; depth < 32; depth++ {
+		parts := strings.Split(strings.TrimPrefix(current, string(filepath.Separator)), string(filepath.Separator))
+		prefix := string(filepath.Separator)
+		for i, part := range parts {
+			if part == "" {
+				continue
+			}
+			next := filepath.Join(prefix, part)
+			containerNext := hostPathToContainer(root, next)
+			info, err := os.Lstat(containerNext)
+			if os.IsNotExist(err) {
+				return hostPathToContainer(root, current)
+			}
+			if err != nil || info.Mode()&os.ModeSymlink == 0 {
+				prefix = next
+				continue
+			}
+			target, err := os.Readlink(containerNext)
+			if err != nil {
+				return hostPathToContainer(root, current)
+			}
+			remaining := filepath.Join(parts[i+1:]...)
+			if filepath.IsAbs(target) {
+				current = filepath.Join(target, remaining)
+			} else {
+				current = filepath.Join(filepath.Dir(next), target, remaining)
+			}
+			if !filepath.IsAbs(current) {
+				current = string(filepath.Separator) + current
+			}
+			goto resolvedOneSymlink
+		}
+		return hostPathToContainer(root, current)
+	resolvedOneSymlink:
+	}
+	return hostPathToContainer(root, current)
+}
+
 func decide(node Node) Decision {
-	dataDir := env("HOST_PXC_DATA_DIR", defaultHostPXCDataDir)
+	hostRoot := env("HOST_ROOT", defaultHostRoot)
+	dataDir := resolveHostPath(hostRoot, env("HOST_PXC_DATA_DIR", defaultHostPXCDataDir))
 	minRAM := envInt64("PXC_MIN_RAM_MB", defaultMinRAMMB)
 	minFree := envInt64("PXC_MIN_FREE_BYTES", defaultMinFreeBytes)
 	dbBytes := readClusterDBBytes()
