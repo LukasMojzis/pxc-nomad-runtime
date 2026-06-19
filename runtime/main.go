@@ -45,6 +45,14 @@ func envInt(name string, fallback int) int {
 	return parsed
 }
 
+func statusInt(values map[string]string, name string) int {
+	parsed, err := strconv.Atoi(values[name])
+	if err != nil {
+		return 0
+	}
+	return parsed
+}
+
 func resolveSRV(name string) ([]string, error) {
 	_, records, err := net.LookupSRV("", "", name)
 	if err != nil {
@@ -498,26 +506,30 @@ func mysqlStatus(names []string) (map[string]string, error) {
 }
 
 func checkPrimary() int {
-	values, err := mysqlStatus([]string{"wsrep_cluster_status", "wsrep_connected"})
+	values, err := mysqlStatus([]string{"wsrep_cluster_status", "wsrep_connected", "wsrep_cluster_size"})
 	if err != nil {
 		fmt.Println(err)
 		return 1
 	}
-	fmt.Printf("cluster_status=%s connected=%s\n", values["wsrep_cluster_status"], values["wsrep_connected"])
-	if values["wsrep_cluster_status"] == "Primary" && values["wsrep_connected"] == "ON" {
+	size := statusInt(values, "wsrep_cluster_size")
+	minSize := envInt("PXC_MIN_CLUSTER_SIZE", 1)
+	fmt.Printf("cluster_status=%s connected=%s cluster_size=%d min_cluster_size=%d\n", values["wsrep_cluster_status"], values["wsrep_connected"], size, minSize)
+	if values["wsrep_cluster_status"] == "Primary" && values["wsrep_connected"] == "ON" && size >= minSize {
 		return 0
 	}
 	return 1
 }
 
 func checkReady() int {
-	values, err := mysqlStatus([]string{"wsrep_cluster_status", "wsrep_local_state_comment", "wsrep_ready"})
+	values, err := mysqlStatus([]string{"wsrep_cluster_status", "wsrep_local_state_comment", "wsrep_ready", "wsrep_cluster_size"})
 	if err != nil {
 		fmt.Println(err)
 		return 1
 	}
-	fmt.Printf("cluster_status=%s local_state=%s ready=%s\n", values["wsrep_cluster_status"], values["wsrep_local_state_comment"], values["wsrep_ready"])
-	if values["wsrep_cluster_status"] == "Primary" && values["wsrep_local_state_comment"] == "Synced" && values["wsrep_ready"] == "ON" {
+	size := statusInt(values, "wsrep_cluster_size")
+	minSize := envInt("PXC_MIN_CLUSTER_SIZE", 1)
+	fmt.Printf("cluster_status=%s local_state=%s ready=%s cluster_size=%d min_cluster_size=%d\n", values["wsrep_cluster_status"], values["wsrep_local_state_comment"], values["wsrep_ready"], size, minSize)
+	if values["wsrep_cluster_status"] == "Primary" && values["wsrep_local_state_comment"] == "Synced" && values["wsrep_ready"] == "ON" && size >= minSize {
 		return 0
 	}
 	return 1
