@@ -54,7 +54,8 @@ func statusInt(values map[string]string, name string) int {
 }
 
 func resolveSRV(name string) ([]string, error) {
-	_, records, err := net.LookupSRV("", "", name)
+	resolver := consulDNSResolver()
+	_, records, err := resolver.LookupSRV(context.Background(), "", "", name)
 	if err != nil {
 		return nil, fmt.Errorf("SRV lookup for %s failed: %w", name, err)
 	}
@@ -63,6 +64,17 @@ func resolveSRV(name string) ([]string, error) {
 		return nil, fmt.Errorf("SRV lookup for %s returned no usable records", name)
 	}
 	return peers, nil
+}
+
+func consulDNSResolver() *net.Resolver {
+	address := env("CONSUL_DNS_ADDR", "127.0.0.1:8600")
+	return &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			dialer := net.Dialer{Timeout: 2 * time.Second}
+			return dialer.DialContext(ctx, network, address)
+		},
+	}
 }
 
 func sortedPeers(records []*net.SRV) []string {
